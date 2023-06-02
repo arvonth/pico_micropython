@@ -95,6 +95,7 @@ while True:
     print('--------------------------------')
     text_y = 8
     oled.blit(blank_fb,0,text_y)
+    oled.blit(blank_fb,BUFFER_WIDTH*8,text_y)
     oled.text(sensor.operation,0,8)
     text_y = 20
     oled.blit(blank_fb,65,text_y)
