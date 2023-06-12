@@ -1,10 +1,9 @@
-from machine import Pin, I2C, ADC, const
+from machine import Pin, I2C, ADC
 from micropython import const
 from ssd1306 import SSD1306_I2C
 import framebuf
 import utime
 import sys
-from image_arrays import bw_buffer
 from PiicoDev_ENS160 import PiicoDev_ENS160 # import the device driver
 from PiicoDev_Unified import sleep_ms       # a cross-platform sleep function
 import network
@@ -19,6 +18,7 @@ HEIGHT = const(64)          # oled display height
 BUFFER_WIDTH = const(4)
 CHARACTER_WIDTH = const(8)
 CHARACTER_HEIGHT = const(8)
+refresh_period_seconds = const(10)
 
 #Strings
 aqi_str =  '   AQI: '
@@ -41,6 +41,7 @@ aqi_topic = b'home-assistant/livingroom/aqi'
 eco2_topic = b'home-assistant/livingroom/eco2'
 tvoc_topic = b'home-assistant/livingroom/tvoc'
 
+sensor_temp = ADC(4)
 conversion_factor = 3.3 / (65535)
 #Create a framebuffer that can be used to clear text
 s = BUFFER_WIDTH * 8 * [0]
@@ -48,8 +49,18 @@ blank_buffer = bytearray(s)
 blank_fb = framebuf.FrameBuffer(blank_buffer, BUFFER_WIDTH * CHARACTER_WIDTH, CHARACTER_WIDTH, framebuf.MONO_HLSB)
 
 def init_system():
-    """setup i2c devices, make the wifi connection, connect to mqtt broker"""
+    """setup i2c devices, make the wifi connection"""
     
+    print("Wi-Fi Connecting...",end='')
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(ap,pw)
+    utime.sleep(5)
+    if(wlan.isconnected()):
+        print("success!")
+    else:
+        print("failure")
+
     #This block is need for the older Adafruit displays that have reset pin
     RESET_PIN = Pin(22, Pin.OUT)
     print("Resetting OLED...",end='')
@@ -66,6 +77,12 @@ def init_system():
 
     try:
         oled = SSD1306_I2C(WIDTH, HEIGHT, i2c,addr=oled_addr,external_vcc=False)                  # Init oled display
+        oled.text(aqi_str,0,20)
+        oled.text(tvoc_str,0,30)
+        oled.text(eco2_str,0,40)
+        oled.text('  Temp: ',0,50)
+        oled.text("*F",105,50)
+        oled.show()
     except OSError:
         print("SSD1306 EIO Error - Possible Address conflict")
         sys.exit()
@@ -75,13 +92,7 @@ def init_system():
     except OSError:
         print("ENS160 EIO Error - Possible Address conflict")
         sys.exit()
-
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    wlan.connect(ap,pw)
-    utime.sleep(5)
-    print(wlan.isconnected())
-
+        
     return oled, sensor
 
 def mqtt_connect():
@@ -92,7 +103,7 @@ def mqtt_connect():
 
 def reconnect():
     print('Failed to connect to the MQTT Broker. Reconnecting...')
-    time.sleep(5)
+    utime.sleep(5)
     machine.reset()
 
 def display_sensor_data(oled,aqi,eco2,tvoc,operation):
@@ -104,7 +115,6 @@ def display_sensor_data(oled,aqi,eco2,tvoc,operation):
         meas_count+=1
         utime.sleep(0.010)
         
-    oled.show()
     reading = sum_readings / meas_count
     celsius_degrees = 27 - (reading - 0.706)/0.001721
     fahrenheit_degrees = celsius_degrees * 9 / 5 + 32
@@ -119,7 +129,7 @@ def display_sensor_data(oled,aqi,eco2,tvoc,operation):
     text_y = 8
     oled.blit(blank_fb,0,text_y)
     oled.blit(blank_fb,BUFFER_WIDTH*8,text_y)
-    oled.text(sensor.operation,0,8)
+    oled.text(operation,0,8)
     text_y = 20
     oled.blit(blank_fb,65,text_y)
     oled.text(str(aqi.value),65,text_y)
@@ -133,7 +143,7 @@ def display_sensor_data(oled,aqi,eco2,tvoc,operation):
     text_y = 50
     oled.blit(blank_fb,65,text_y)
     oled.text(str(round(fahrenheit_degrees,1)),65,50)
-    utime.sleep(5)
+    oled.show()
 
 def display_fatal_error():
     """Display an error if the sensor or network doesn't work"""
@@ -145,24 +155,29 @@ def main():
     try:
         mqtt_client = mqtt_connect()
     except OSError as e:
-        reconnect()
+        sys.exit()
 
     sensor_dict = {}
 
     while True:
         # Read from the sensor
-        aqi_value = sensor.aqi.value
-        tvoc_value = sensor.tvoc.value
-        eco2_value = sensor.eco2.value
-        operation_value = sensor.operation.value
-
-        #publish the data
-        mqtt_client.publish(aqi_topic,aqi_value)
-        mqtt_client.publish(tvoc_topic,tvoc_value)
-        mqtt_client.publish(eco2_topic,eco2_value)
+        aqi = sensor.aqi
+        tvoc = sensor.tvoc
+        eco2 = sensor.eco2
+        operation = sensor.operation
 
         #display sensor data
-        display_sensor_data(aqi_value,eco2_value,tvoc_value,operation_value)
+        display_sensor_data(oled,aqi,eco2,tvoc,operation)
+
+        #publish the data
+        mqtt_client.publish(aqi_topic,str(aqi.value))
+        mqtt_client.publish(tvoc_topic,str(tvoc))
+        mqtt_client.publish(eco2_topic,str(eco2.value))
+        
+        utime.sleep(refresh_period_seconds)
+        
+if __name__ == '__main__':
+    main()
 
 
 
