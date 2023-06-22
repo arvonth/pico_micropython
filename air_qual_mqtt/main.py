@@ -127,8 +127,8 @@ def display_sensor_data(oled,aqi,eco2,tvoc,operation):
     print('  Temp: ' +str(round(fahrenheit_degrees,1)) + '°F')
     print('--------------------------------')
     text_y = 8
-    oled.blit(blank_fb,0,text_y)
-    oled.blit(blank_fb,BUFFER_WIDTH*8,text_y)
+    for x_offset in range(0,100,4):
+        oled.blit(blank_fb,x_offset,text_y)
     oled.text(operation,0,8)
     text_y = 20
     oled.blit(blank_fb,65,text_y)
