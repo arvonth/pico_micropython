@@ -1,4 +1,4 @@
-from machine import Pin, I2C, ADC
+from machine import Pin, I2C, ADC, WDT
 from micropython import const
 from ssd1306 import SSD1306_I2C
 import framebuf
@@ -8,7 +8,7 @@ from PiicoDev_ENS160 import PiicoDev_ENS160 # import the device driver
 from PiicoDev_Unified import sleep_ms       # a cross-platform sleep function
 import network
 from umqtt.simple import MQTTClient
-from secrets import ap, pw
+from secrets import ap, pw, mqtt_user, mqtt_pw
 
 
 
@@ -35,7 +35,7 @@ i2c0_bus = const(0)
 #wlan variables
 
 #mqtt variables
-mqtt_server = '192.168.1.138'
+mqtt_server = '192.168.1.131'
 client_id = ''
 aqi_topic = b'home-assistant/livingroom/aqi'
 eco2_topic = b'home-assistant/livingroom/eco2'
@@ -96,7 +96,7 @@ def init_system():
     return oled, sensor
 
 def mqtt_connect():
-    client = MQTTClient(client_id, mqtt_server, keepalive=3600)
+    client = MQTTClient(client_id, mqtt_server, 1883, mqtt_user, mqtt_pw, keepalive=3600)
     client.connect()
     print('Connected to %s MQTT Broker'%(mqtt_server))
     return client
@@ -159,6 +159,7 @@ def main():
 
     sensor_dict = {}
 
+    wdt = WDT(timeout=5000)
     while True:
         # Read from the sensor
         aqi = sensor.aqi
@@ -174,7 +175,10 @@ def main():
         mqtt_client.publish(tvoc_topic,str(tvoc))
         mqtt_client.publish(eco2_topic,str(eco2.value))
         
-        utime.sleep(refresh_period_seconds)
+        for _ in range(refresh_period_seconds):
+            utime.sleep(1)
+            wdt.feed()
+            
         
 if __name__ == '__main__':
     main()
