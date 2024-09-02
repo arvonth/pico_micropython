@@ -50,16 +50,6 @@ blank_fb = framebuf.FrameBuffer(blank_buffer, BUFFER_WIDTH * CHARACTER_WIDTH, CH
 
 def init_system():
     """setup i2c devices, make the wifi connection"""
-    
-    print("Wi-Fi Connecting...",end='')
-    wlan = network.WLAN(network.STA_IF)
-    wlan.active(True)
-    wlan.connect(ap,pw)
-    utime.sleep(5)
-    if(wlan.isconnected()):
-        print("success!")
-    else:
-        print("failure")
 
     #This block is need for the older Adafruit displays that have reset pin
     RESET_PIN = Pin(22, Pin.OUT)
@@ -69,30 +59,54 @@ def init_system():
     RESET_PIN.value(True)
     print("done")
 
+    #i2c Bus
     i2c = I2C(i2c0_bus, scl=i2c0_scl, sda=i2c0_sda, freq=i2c0_freq)# Init I2C using pins GP8 & GP9 (default I2C0 pins)
+
+    #i2c Display
     oled_addr = int(i2c.scan()[0])
     print("I2C Address      : "+hex(oled_addr).upper()) # Display device address
     print("I2C Configuration: "+str(i2c))                   # Display I2C config
-
-
+    
     try:
         oled = SSD1306_I2C(WIDTH, HEIGHT, i2c,addr=oled_addr,external_vcc=False)                  # Init oled display
-        oled.text(aqi_str,0,20)
-        oled.text(tvoc_str,0,30)
-        oled.text(eco2_str,0,40)
-        oled.text('  Temp: ',0,50)
-        oled.text("*F",105,50)
+        oled.text("Display...OK",0,10)
         oled.show()
     except OSError:
         print("SSD1306 EIO Error - Possible Address conflict")
         sys.exit()
 
+    #i2c Sensor
     try:
         sensor = PiicoDev_ENS160(bus=i2c0_bus,scl=i2c0_scl, sda=i2c0_sda,freq=i2c0_freq)   # Initialise the ENS160 module
+        oled.text("Sensor...OK",0,20)
+        oled.show()
     except OSError:
+        oled.text("Sensor...Failed",0,20)
+        oled.show()
         print("ENS160 EIO Error - Possible Address conflict")
         sys.exit()
-        
+
+    #wifi
+    print("Wi-Fi Connecting...",end='')
+    oled.text("WIFI...",0,30)
+    oled.show()
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    wlan.connect(ap,pw)
+    utime.sleep(5)
+    wlan_connected = wlan.isconnected()
+    if(wlan_connected):
+        print("success!")
+        oled.text("WIFI...OK",0,30)
+        oled.show()
+        utime.sleep(5)
+        oled.fill(0)
+    else:
+        wifw_status = wlan.status()
+        print("failure")
+        oled.text("WIFI...Failed",0,30)
+        oled.show()
+        sys.exit()
     return oled, sensor
 
 def mqtt_connect():
@@ -152,6 +166,14 @@ def display_fatal_error():
 def main():
     """Main Loop"""
     oled, sensor = init_system()
+    oled.fill(0)
+    oled.text(aqi_str,0,20)
+    oled.text(tvoc_str,0,30)
+    oled.text(eco2_str,0,40)
+    oled.text('  Temp: ',0,50)
+    oled.text("*F",105,50)
+    oled.show()
+
     try:
         mqtt_client = mqtt_connect()
     except OSError as e:
