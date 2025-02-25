@@ -15,7 +15,7 @@ from secrets import ap, pw, mqtt_user, mqtt_pw
 #Constants
 WIDTH  = const(128)         # oled display width
 HEIGHT = const(64)          # oled display height
-BUFFER_WIDTH = const(4)
+BUFFER_WIDTH = const(8)
 CHARACTER_WIDTH = const(8)
 CHARACTER_HEIGHT = const(8)
 refresh_period_seconds = const(10)
@@ -87,26 +87,30 @@ def init_system():
         sys.exit()
 
     #wifi
-    print("Wi-Fi Connecting...",end='')
     oled.text("WIFI...",0,30)
     oled.show()
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     wlan.connect(ap,pw)
-    utime.sleep(5)
-    wlan_connected = wlan.isconnected()
-    if(wlan_connected):
-        print("success!")
+    max_wait = 10
+    while max_wait > 0:
+        if wlan.status() < 0 or wlan.status() >= 3:
+            break
+        max_wait -= 1
+        print("Wi-Fi Connecting...",end='')
+        utime.sleep(1)
+
+    # Handle connection error
+    if wlan.status() != 3:
+        raise RuntimeError('network connection failed')
+    else:
+        print('connected')
+        status = wlan.ifconfig()
+        print( 'ip = ' + status[0] )
         oled.text("WIFI...OK",0,30)
         oled.show()
         utime.sleep(5)
         oled.fill(0)
-    else:
-        wifw_status = wlan.status()
-        print("failure")
-        oled.text("WIFI...Failed",0,30)
-        oled.show()
-        sys.exit()
     return oled, sensor
 
 def mqtt_connect():
