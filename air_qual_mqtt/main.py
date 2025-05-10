@@ -1,213 +1,220 @@
-from machine import Pin, I2C, ADC, WDT
+from machine import Pin, I2C, ADC, WDT, reset
 from micropython import const
-from ssd1306 import SSD1306_I2C
-import framebuf
+import network
 import utime
 import sys
-from PiicoDev_ENS160 import PiicoDev_ENS160 # import the device driver
-from PiicoDev_Unified import sleep_ms       # a cross-platform sleep function
-import network
+import framebuf
+
+from ssd1306 import SSD1306_I2C
+import onewire, ds18x20
+from PiicoDev_ENS160 import PiicoDev_ENS160
+from PiicoDev_Unified import sleep_ms
 from umqtt.simple import MQTTClient
 from secrets import ap, pw, mqtt_user, mqtt_pw
 
-
-
-#Constants
-WIDTH  = const(128)         # oled display width
-HEIGHT = const(64)          # oled display height
+# === Constants ===
+WIDTH = const(128)
+HEIGHT = const(64)
 BUFFER_WIDTH = const(8)
-CHARACTER_WIDTH = const(8)
-CHARACTER_HEIGHT = const(8)
-refresh_period_seconds = const(10)
+CHAR_WIDTH = const(8)
+CHAR_HEIGHT = const(8)
+REFRESH_SECONDS = const(10)
 
-#Strings
-aqi_str =  '   AQI: '
-tvoc_str = '  TVOC: '
-eco2_str = '  eCO2: '
-stat_str = 'Status: '
+MQTT_SERVER = '192.168.1.131'
+MQTT_PORT = 1883
+MQTT_TOPICS = {
+    "aqi": b'home-assistant/livingroom/aqi',
+    "eco2": b'home-assistant/livingroom/eco2',
+    "tvoc": b'home-assistant/livingroom/tvoc'
+}
 
-#i2c variables
-i2c0_scl = Pin(5)
-i2c0_sda = Pin(4)
-i2c0_freq = const(400000)
-i2c0_bus = const(0)
+I2C0_SCL = Pin(5)
+I2C0_SDA = Pin(4)
+I2C0_FREQ = const(400_000)
+I2C0_BUS = const(0)
 
-#wlan variables
-
-#mqtt variables
-mqtt_server = '192.168.1.131'
-client_id = ''
-aqi_topic = b'home-assistant/livingroom/aqi'
-eco2_topic = b'home-assistant/livingroom/eco2'
-tvoc_topic = b'home-assistant/livingroom/tvoc'
-
+# === Global Sensor Setup ===
 sensor_temp = ADC(4)
-conversion_factor = 3.3 / (65535)
-#Create a framebuffer that can be used to clear text
-s = BUFFER_WIDTH * 8 * [0]
-blank_buffer = bytearray(s)
-blank_fb = framebuf.FrameBuffer(blank_buffer, BUFFER_WIDTH * CHARACTER_WIDTH, CHARACTER_WIDTH, framebuf.MONO_HLSB)
+VOLTAGE_CONVERSION = 3.3 / 65535
+#blank_fb = framebuf.FrameBuffer(bytearray(BUFFER_WIDTH * 8), BUFFER_WIDTH * CHAR_WIDTH, CHAR_HEIGHT, framebuf.MONO_HLSB)
+# Create a framebuffer to blank a 128x8 area of the display
+blank_buffer = bytearray(128 * 8 // 8)  # 128 pixels wide × 8 pixels high ÷ 8 bits/byte
+blank_fb = framebuf.FrameBuffer(blank_buffer, 128, 8, framebuf.MONO_HLSB)
 
-def init_system():
-    """setup i2c devices, make the wifi connection"""
+# === Utility Functions ===
 
-    #This block is need for the older Adafruit displays that have reset pin
-    RESET_PIN = Pin(22, Pin.OUT)
-    print("Resetting OLED...",end='')
-    RESET_PIN.value(False)
-    utime.sleep(0.25)
-    RESET_PIN.value(True)
-    print("done")
+def average_temp_f():
+    """Read and return temperature in Fahrenheit."""
+    sum_readings = sum(sensor_temp.read_u16() * VOLTAGE_CONVERSION for _ in range(5))
+    avg_reading = sum_readings / 5
+    celsius = 27 - (avg_reading - 0.706) / 0.001721
+    return round(celsius * 9 / 5 + 32, 1)
 
-    #i2c Bus
-    i2c = I2C(i2c0_bus, scl=i2c0_scl, sda=i2c0_sda, freq=i2c0_freq)# Init I2C using pins GP8 & GP9 (default I2C0 pins)
+def celsius_to_fahrenheit(temp_c):
+    return temp_c * 9 / 5 + 32
 
-    #i2c Display
-    oled_addr = int(i2c.scan()[0])
-    print("I2C Address      : "+hex(oled_addr).upper()) # Display device address
-    print("I2C Configuration: "+str(i2c))                   # Display I2C config
-    
+def read_ds18b20_temp(ds, ds_rom):
+    """
+    Initiates a temperature conversion and reads the temperature
+    from a DS18B20 sensor.
+
+    Args:
+        ds (DS18X20): The DS18X20 temperature sensor object.
+        ds_rom (bytearray): The ROM code of the sensor.
+
+    Returns:
+        float: The temperature in Celsius.
+    """
+    ds.convert_temp()
+    utime.sleep_ms(750)  # Wait for conversion to complete
+    temp_c = ds.read_temp(ds_rom)
+    return temp_c
+
+def init_i2c_display(i2c):
+    """Initialize SSD1306 OLED display."""
+    addr = i2c.scan()[0]
+    print(f"I2C Address: {hex(addr).upper()}")
+
     try:
-        oled = SSD1306_I2C(WIDTH, HEIGHT, i2c,addr=oled_addr,external_vcc=False)                  # Init oled display
-        oled.text("Display...OK",0,10)
+        oled = SSD1306_I2C(WIDTH, HEIGHT, i2c, addr=addr, external_vcc=False)
+        oled.text("Display...OK", 0, 10)
         oled.show()
+        return oled
     except OSError:
         print("SSD1306 EIO Error - Possible Address conflict")
         sys.exit()
 
-    #i2c Sensor
+def init_ens160_sensor():
+    """Initialize ENS160 sensor."""
     try:
-        sensor = PiicoDev_ENS160(bus=i2c0_bus,scl=i2c0_scl, sda=i2c0_sda,freq=i2c0_freq)   # Initialise the ENS160 module
-        oled.text("Sensor...OK",0,20)
-        oled.show()
+        return PiicoDev_ENS160(bus=I2C0_BUS, scl=I2C0_SCL, sda=I2C0_SDA, freq=I2C0_FREQ)
     except OSError:
-        oled.text("Sensor...Failed",0,20)
-        oled.show()
         print("ENS160 EIO Error - Possible Address conflict")
         sys.exit()
 
-    #wifi
-    oled.text("WIFI...",0,30)
-    oled.show()
+def connect_wifi(oled):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
-    wlan.connect(ap,pw)
-    max_wait = 10
-    while max_wait > 0:
-        if wlan.status() < 0 or wlan.status() >= 3:
+    wlan.connect(ap, pw)
+
+    oled.text("WIFI...", 0, 40)
+    oled.show()
+
+    for _ in range(10):
+        if wlan.status() >= 3:
             break
-        max_wait -= 1
-        print("Wi-Fi Connecting...",end='')
         utime.sleep(1)
 
-    # Handle connection error
     if wlan.status() != 3:
-        raise RuntimeError('network connection failed')
-    else:
-        print('connected')
-        status = wlan.ifconfig()
-        print( 'ip = ' + status[0] )
-        oled.text("WIFI...OK",0,30)
+        raise RuntimeError("Network connection failed")
+    
+    ip = wlan.ifconfig()[0]
+    print(f"Connected. IP: {ip}")
+    oled.text("WIFI...OK", 0, 40)
+    oled.show()
+    utime.sleep(2)
+    oled.fill(0)
+
+def init_system():
+    """Initialize all hardware and return handles."""
+    # Reset OLED if needed
+    reset_pin = Pin(23, Pin.OUT)
+    reset_pin.value(False)
+    utime.sleep(0.25)
+    reset_pin.value(True)
+
+    i2c = I2C(I2C0_BUS, scl=I2C0_SCL, sda=I2C0_SDA, freq=I2C0_FREQ)
+    oled = init_i2c_display(i2c)
+    sensor = init_ens160_sensor()
+    oled.text("Sensor...OK", 0, 20)
+    oled.show()
+
+    # Setup OneWire sensor (DS18B20)
+    try:
+        ow = onewire.OneWire(Pin(22))  # create a OneWire bus on GPIO22
+        roms = ow.scan()
+        if not roms:
+            raise Exception("No DS18B20 sensor found")
+        ds = ds18x20.DS18X20(ow)
+        ds_rom = roms[0]
+        oled.text("DS18B20...OK", 0, 30)
         oled.show()
-        utime.sleep(5)
-        oled.fill(0)
-    return oled, sensor
+    except Exception as e:
+        oled.text("DS18B20...FAIL", 0, 30)
+        oled.show()
+        print("DS18B20 Error:", e)
+        ds = None
+        ds_rom = None
+
+    connect_wifi(oled)
+
+    return oled, sensor, ds_rom, ds
 
 def mqtt_connect():
-    client = MQTTClient(client_id, mqtt_server, 1883, mqtt_user, mqtt_pw, keepalive=3600)
-    client.connect()
-    print('Connected to %s MQTT Broker'%(mqtt_server))
-    return client
+    """Connect to MQTT broker and return client."""
+    try:
+        client = MQTTClient('', MQTT_SERVER, MQTT_PORT, mqtt_user, mqtt_pw, keepalive=3600)
+        client.connect()
+        print(f'Connected to MQTT broker at {MQTT_SERVER}')
+        return client
+    except Exception as e:
+        print("MQTT connection failed. Rebooting...")
+        utime.sleep(5)
+        reset()
 
-def reconnect():
-    print('Failed to connect to the MQTT Broker. Reconnecting...')
-    utime.sleep(5)
-    machine.reset()
+def display_sensor_data(oled, sensor, temp_f):
+    """Display sensor readings on the OLED screen."""
+    aqi = sensor.aqi
+    tvoc = sensor.tvoc
+    eco2 = sensor.eco2
+    operation = sensor.operation
 
-def display_sensor_data(oled,aqi,eco2,tvoc,operation):
-    """display sensor data on the oled"""
-    meas_count = 0
-    sum_readings = 0
-    for i in range(5):
-        sum_readings+=sensor_temp.read_u16() * conversion_factor
-        meas_count+=1
-        utime.sleep(0.010)
-        
-    reading = sum_readings / meas_count
-    celsius_degrees = 27 - (reading - 0.706)/0.001721
-    fahrenheit_degrees = celsius_degrees * 9 / 5 + 32
-    
-    # Print air quality metrics and temperature
-    print(aqi_str + str(aqi.value) + ' [' + str(aqi.rating) +']')
-    print(tvoc_str + str(tvoc) + ' ppb')
-    print(eco2_str + str(eco2.value) + ' ppm [' + str(eco2.rating) +']')
-    print(stat_str + operation)
-    print('  Temp: ' +str(round(fahrenheit_degrees,1)) + '°F')
-    print('--------------------------------')
-    text_y = 8
-    for x_offset in range(0,100,4):
-        oled.blit(blank_fb,x_offset,text_y)
-    oled.text(operation,0,8)
-    text_y = 20
-    oled.blit(blank_fb,65,text_y)
-    oled.text(str(aqi.value),65,text_y)
-    text_y = 30
-    oled.blit(blank_fb,65,text_y)
-    oled.text(str(tvoc),65,text_y)
-    text_y = 40
-    oled.blit(blank_fb,65,text_y)
-    oled.text(str(eco2.value),65,text_y)
+    print(f"   AQI: {aqi.value} [{aqi.rating}]")
+    print(f"  TVOC: {tvoc} ppb")
+    print(f"  eCO2: {eco2.value} ppm [{eco2.rating}]")
+    print(f"Status: {operation}")
+    print(f"  Temp: {str(round(temp_f,1))}°F")
+    print("-" * 32)
 
-    text_y = 50
-    oled.blit(blank_fb,65,text_y)
-    oled.text(str(round(fahrenheit_degrees,1)),65,50)
+    # Clear lines
+    for y in [8, 20, 30, 40, 50]:
+        oled.blit(blank_fb, 0, y)
+
+    # Display updated text
+    oled.text(f"{operation}", 0, 8)
+    oled.text(f" AQI: {aqi.value}", 0, 20)
+    oled.text(f"TVOC: {tvoc}", 0, 30)
+    oled.text(f"eCO2: {eco2.value}", 0, 40)
+    oled.text(f"Temp: {round(temp_f,1)}  F", 0, 50)
+    oled.text("o", 88, 45)
     oled.show()
 
-def display_fatal_error():
-    """Display an error if the sensor or network doesn't work"""
-    pass
+
+# === Main Program ===
 
 def main():
-    """Main Loop"""
-    oled, sensor = init_system()
-    oled.fill(0)
-    oled.text(aqi_str,0,20)
-    oled.text(tvoc_str,0,30)
-    oled.text(eco2_str,0,40)
-    oled.text('  Temp: ',0,50)
-    oled.text("*F",105,50)
-    oled.show()
-
-    try:
-        mqtt_client = mqtt_connect()
-    except OSError as e:
-        sys.exit()
-
-    sensor_dict = {}
-
+    oled, sensor, ds_rom, ds = init_system()
+    mqtt_client = mqtt_connect()
     wdt = WDT(timeout=5000)
+
     while True:
-        # Read from the sensor
+        temp_c = read_ds18b20_temp(ds, ds_rom)
+        temp_f = celsius_to_fahrenheit(temp_c)
+        sensor.temperature = temp_c
         aqi = sensor.aqi
         tvoc = sensor.tvoc
         eco2 = sensor.eco2
         operation = sensor.operation
 
-        #display sensor data
-        display_sensor_data(oled,aqi,eco2,tvoc,operation)
+        display_sensor_data(oled, sensor, temp_f)
 
-        #publish the data
-        mqtt_client.publish(aqi_topic,str(aqi.value))
-        mqtt_client.publish(tvoc_topic,str(tvoc))
-        mqtt_client.publish(eco2_topic,str(eco2.value))
-        
-        for _ in range(refresh_period_seconds):
+        mqtt_client.publish(MQTT_TOPICS['aqi'], str(aqi.value))
+        mqtt_client.publish(MQTT_TOPICS['tvoc'], str(tvoc))
+        mqtt_client.publish(MQTT_TOPICS['eco2'], str(eco2.value))
+
+        for _ in range(REFRESH_SECONDS):
             utime.sleep(1)
             wdt.feed()
-            
-        
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
-
-
-
