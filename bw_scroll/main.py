@@ -19,7 +19,7 @@ utime.sleep(0.25)
 RESET_PIN.value(True)
 print("done")
 
-i2c = I2C(0, scl=Pin(17), sda=Pin(16), freq=400000)# Init I2C using pins GP8 & GP9 (default I2C0 pins)
+i2c = I2C(0, scl=Pin(5), sda=Pin(4), freq=400000)# Init I2C using pins GP8 & GP9 (default I2C0 pins)
 oled_addr = int(i2c.scan()[0])
 print("I2C Address      : "+hex(oled_addr).upper()) # Display device address
 print("I2C Configuration: "+str(i2c))                   # Display I2C config

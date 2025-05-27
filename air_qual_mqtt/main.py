@@ -19,6 +19,9 @@ BUFFER_WIDTH = const(8)
 CHAR_WIDTH = const(8)
 CHAR_HEIGHT = const(8)
 REFRESH_SECONDS = const(10)
+DISP_ON_TIME_TICKS = const(3000)
+DISP_OFF_TIME_TICKS = const(10_000)
+ANIMATION_TIME_TICKS = const(5000)
 
 MQTT_SERVER = '192.168.1.131'
 MQTT_PORT = 1883
@@ -27,6 +30,14 @@ MQTT_TOPICS = {
     "eco2": b'home-assistant/livingroom/eco2',
     "tvoc": b'home-assistant/livingroom/tvoc'
 }
+
+class DisplayState:
+    SHOW_IP = const(0)
+    SHOW_SENSOR = const(1)
+    DISPLAY_OFF = const(2)
+    ANIMATION1 = const(3)
+    ANIMATION2 = const(4)
+    
 
 I2C0_SCL = Pin(5)
 I2C0_SDA = Pin(4)
@@ -115,6 +126,8 @@ def connect_wifi(oled):
     utime.sleep(2)
     oled.fill(0)
 
+    return ip
+
 def init_system():
     """Initialize all hardware and return handles."""
     # Reset OLED if needed
@@ -146,9 +159,9 @@ def init_system():
         ds = None
         ds_rom = None
 
-    connect_wifi(oled)
+    ip = connect_wifi(oled)
 
-    return oled, sensor, ds_rom, ds
+    return oled, sensor, ds_rom, ds, ip
 
 def mqtt_connect():
     """Connect to MQTT broker and return client."""
@@ -164,6 +177,9 @@ def mqtt_connect():
 
 def display_sensor_data(oled, sensor, temp_f):
     """Display sensor readings on the OLED screen."""
+    oled.contrast(64)  # Default is 255. Lower = dimmer
+    oled.fill(0)
+
     aqi = sensor.aqi
     tvoc = sensor.tvoc
     eco2 = sensor.eco2
@@ -193,28 +209,119 @@ def display_sensor_data(oled, sensor, temp_f):
 # === Main Program ===
 
 def main():
-    oled, sensor, ds_rom, ds = init_system()
+    oled, sensor, ds_rom, ds, ip = init_system()
     mqtt_client = mqtt_connect()
     wdt = WDT(timeout=5000)
 
+    spinner_index = 0  # initialize before the loop
+    last_frame_time = utime.ticks_ms()
+    spinner_frames = ['|', '/', '-', '\\']
+
+    box_x, box_y = 0, 0
+    box_dx, box_dy = 3, 3  # speed
+    box_w, box_h = 16, 8
+    last_box_move = utime.ticks_ms()
+
+    state = DisplayState.SHOW_SENSOR
+    state_start_time = utime.ticks_ms()
+
     while True:
-        temp_c = read_ds18b20_temp(ds, ds_rom)
-        temp_f = celsius_to_fahrenheit(temp_c)
-        sensor.temperature = temp_c
-        aqi = sensor.aqi
-        tvoc = sensor.tvoc
-        eco2 = sensor.eco2
-        operation = sensor.operation
+        now = utime.ticks_ms()
+        elapsed = utime.ticks_diff(now, state_start_time)
 
-        display_sensor_data(oled, sensor, temp_f)
+        # === State Machine ===
+        if state == DisplayState.SHOW_IP:
+            if elapsed < 100:
+                oled.poweron()
+                oled.fill(0)
+                oled.text("IP Address:", 0, 20)
+                oled.text(ip, 0, 35)
+                oled.show()
+            elif elapsed > DISP_ON_TIME_TICKS:
+                state = DisplayState.ANIMATION2
+                state_start_time = now
 
-        mqtt_client.publish(MQTT_TOPICS['aqi'], str(aqi.value))
-        mqtt_client.publish(MQTT_TOPICS['tvoc'], str(tvoc))
-        mqtt_client.publish(MQTT_TOPICS['eco2'], str(eco2.value))
+        elif state == DisplayState.SHOW_SENSOR:
+            if elapsed < 100:
+                oled.poweron()
+                if ds and ds_rom:
+                    temp_c = read_ds18b20_temp(ds, ds_rom)
+                else:
+                    temp_c = (average_temp_f() - 32) * 5 / 9
+                temp_f = celsius_to_fahrenheit(temp_c)
+                sensor.temperature = temp_c
+                display_sensor_data(oled, sensor, temp_f)
 
-        for _ in range(REFRESH_SECONDS):
-            utime.sleep(1)
-            wdt.feed()
+                mqtt_client.publish(MQTT_TOPICS['aqi'], str(sensor.aqi.value))
+                mqtt_client.publish(MQTT_TOPICS['tvoc'], str(sensor.tvoc))
+                mqtt_client.publish(MQTT_TOPICS['eco2'], str(sensor.eco2.value))
+
+            elif elapsed > DISP_ON_TIME_TICKS:
+                state = DisplayState.SHOW_IP
+                state_start_time = now
+
+        elif state == DisplayState.DISPLAY_OFF:
+            if elapsed < 100:
+                oled.poweroff()
+            elif elapsed > DISP_OFF_TIME_TICKS:
+                state = DisplayState.SHOW_IP
+                state_start_time = now
+
+        elif state == DisplayState.ANIMATION1:
+            if elapsed < 100:
+                oled.poweron()
+                oled.fill(0)
+                oled.text("Loading", 0, 20)
+                oled.show()
+            
+            if utime.ticks_diff(now, last_frame_time) > 200:  # update every 200ms
+                # Draw spinner
+                frame = spinner_frames[spinner_index % len(spinner_frames)]
+                oled.fill_rect(60, 40, 8, 8, 0)  # clear previous frame area
+                oled.text(frame, 60, 40)
+                oled.show()
+                spinner_index += 1
+                last_frame_time = now
+
+            if elapsed > DISP_ON_TIME_TICKS:
+                state = DisplayState.SHOW_IP
+                state_start_time = now
+
+        elif state == DisplayState.ANIMATION2:
+            if elapsed < 100:
+                oled.poweron()
+                oled.fill(0)
+                oled.show()
+
+            # Move the box every 100ms
+            if utime.ticks_diff(now, last_box_move) > 50:
+                # Clear previous box
+                oled.fill_rect(box_x, box_y, box_w, box_h, 0)
+
+                # Update position
+                box_x += box_dx
+                box_y += box_dy
+
+                # Bounce off edges
+                if box_x <= 0 or box_x + box_w >= WIDTH:
+                    box_dx = -box_dx
+                if box_y <= 0 or box_y + box_h >= HEIGHT:
+                    box_dy = -box_dy
+
+                # Draw new box
+                oled.fill_rect(box_x, box_y, box_w, box_h, 1)
+                oled.show()
+
+                last_box_move = now
+
+            if elapsed > ANIMATION_TIME_TICKS:
+                state = DisplayState.SHOW_SENSOR
+                state_start_time = now
+
+
+        # Feed watchdog every loop
+        wdt.feed()
+        utime.sleep_ms(50)
 
 if __name__ == "__main__":
     main()
