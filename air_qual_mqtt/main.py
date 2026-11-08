@@ -232,7 +232,6 @@ def main():
         # === State Machine ===
         if state == DisplayState.SHOW_IP:
             if elapsed < 100:
-                oled.poweron()
                 oled.fill(0)
                 oled.text("IP Address:", 0, 20)
                 oled.text(ip, 0, 35)
@@ -243,7 +242,6 @@ def main():
 
         elif state == DisplayState.SHOW_SENSOR:
             if elapsed < 100:
-                oled.poweron()
                 if ds and ds_rom:
                     temp_c = read_ds18b20_temp(ds, ds_rom)
                 else:
@@ -257,7 +255,7 @@ def main():
                 mqtt_client.publish(MQTT_TOPICS['eco2'], str(sensor.eco2.value))
 
             elif elapsed > DISP_ON_TIME_TICKS:
-                state = DisplayState.SHOW_IP
+                state = DisplayState.DISPLAY_OFF
                 state_start_time = now
 
         elif state == DisplayState.DISPLAY_OFF:
@@ -269,7 +267,6 @@ def main():
 
         elif state == DisplayState.ANIMATION1:
             if elapsed < 100:
-                oled.poweron()
                 oled.fill(0)
                 oled.text("Loading", 0, 20)
                 oled.show()
@@ -289,7 +286,6 @@ def main():
 
         elif state == DisplayState.ANIMATION2:
             if elapsed < 100:
-                oled.poweron()
                 oled.fill(0)
                 oled.show()
 
@@ -316,6 +312,7 @@ def main():
 
             if elapsed > ANIMATION_TIME_TICKS:
                 state = DisplayState.SHOW_SENSOR
+                oled.fill(0)
                 state_start_time = now
 
 
